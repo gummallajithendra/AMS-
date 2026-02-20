@@ -1,0 +1,21 @@
+--------------------------------------------------
+Timestamp: 2026-02-19 11:45:19.421749
+Session Coordinator Name: 'jithu '
+Database Query Param: 'jithu '
+Rows Found: 2
+ - App: PEC20260001, Name: Gummalla Jithendra
+ - App: PEC20260002, Name: bhuvi
+--------------------------------------------------
+Timestamp: 2026-02-19 12:52:51.160733
+Session Coordinator Name: 'jithu '
+Database Query Param: 'jithu '
+Rows Found: 2
+ - App: PEC20260001, Name: Gummalla Jithendra
+ - App: PEC20260002, Name: bhuvi
+--------------------------------------------------
+Timestamp: 2026-02-19 13:34:51.589861
+Session Coordinator Name: 'jithu '
+Database Query Param: 'jithu '
+Rows Found: 2
+ - App: PEC20260001, Name: Gummalla Jithendra
+ - App: PEC20260002, Name: bhuvi
