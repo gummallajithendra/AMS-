@@ -135,7 +135,7 @@
       <td class="header-text">
         <h2>PRATHYUSHA ENGINEERING COLLEGE</h2>
         <h3>B.E / B.Tech Degree Admission 2025-26</h3>
-        <p>(CSE / ECE / EEE / CYB SEC / MECH / IT / AI&DS / AIML / BIOTECH / CSBS)</p>
+        <p>(CSE / ECE / EEE / CYB SEC / MECH / CIVIL / IT / AI&DS / AIML / BIOTECH / CSBS)</p>
         <hr>
         <table style="width:100%; border:none;">
           <tr>
@@ -801,17 +801,41 @@
       // Gather ALL inputs
       const inputs = document.querySelectorAll('input, select, textarea');
       const formData = {};
+      const filePromises = [];
+
       inputs.forEach(input => {
         if (input.id) {
           if (input.type === 'checkbox') {
             formData[input.id] = input.checked;
           } else if (input.type === 'file') {
-            // skipping file upload
+            if (input.files && input.files.length > 0) {
+              const file = input.files[0];
+              const fileId = input.id;
+              const p = new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = function (e) {
+                  formData[fileId] = e.target.result;
+                  resolve();
+                };
+                reader.readAsDataURL(file);
+              });
+              filePromises.push(p);
+            } else {
+              // If it's empty, we might already have a preview we loaded from the database
+              // Let's try to grab the src of the sibling img if it's base64
+              const img = input.parentElement.querySelector('img.preview');
+              if (img && img.src.startsWith('data:image')) {
+                formData[input.id] = img.src;
+              }
+            }
           } else {
             formData[input.id] = input.value || "";
           }
         }
       });
+
+      // Wait for all file reads to finish
+      await Promise.all(filePromises);
 
       // Extract main fields
       // Prioritize values from Admission form, fallback to Advance Booking
@@ -828,7 +852,8 @@
         preferred_branch: preferredBranch,
         mobile: mobile,
         address: address,
-        form_data: formData
+        form_data: formData,
+        form_type: 'normal'
       };
 
       if (!studentName || !fatherName || !preferredBranch) {
@@ -926,11 +951,22 @@
 
           Object.keys(fd).forEach(key => {
             const el = document.getElementById(key);
-            if (el && el.type !== 'file') {
-              if (el.type === 'checkbox') el.checked = fd[key];
-              else el.value = fd[key];
-              el.dispatchEvent(new Event('input'));
-              el.dispatchEvent(new Event('change'));
+            if (el) {
+              if (el.type !== 'file') {
+                if (el.type === 'checkbox') el.checked = fd[key];
+                else el.value = fd[key];
+                el.dispatchEvent(new Event('input'));
+                el.dispatchEvent(new Event('change'));
+              } else if (el.type === 'file' && fd[key] && typeof fd[key] === 'string' && fd[key].startsWith('data:image')) {
+                // Cannot set file input value, but can show preview
+                let img = el.parentElement.querySelector('img.preview');
+                if (!img) {
+                  img = document.createElement('img');
+                  img.classList.add('preview');
+                  el.parentElement.appendChild(img);
+                }
+                img.src = fd[key];
+              }
             }
           });
 
@@ -996,9 +1032,10 @@
     document.querySelectorAll('button.btn').forEach(btn => {
       btn.addEventListener('click', () => {
         if (btn.id.includes("save")) return;
+        const appNumStr = document.getElementById('advAppNo') ? document.getElementById('advAppNo').value : 'Preview';
         const filename = btn.innerText.includes("Admission")
-          ? `AdmissionForm_${applicationNumber}.pdf`
-          : `AdvanceBookingForm_${applicationNumber}.pdf`;
+          ? `AdmissionForm_${appNumStr}.pdf`
+          : `AdvanceBookingForm_${appNumStr}.pdf`;
 
         const originalTitle = document.title;
         document.title = filename;

@@ -1,0 +1,17 @@
+{
+    "id": 1,
+    "first_name": "praathyusha",
+    "last_name": "",
+    "email": "prathyusha@gmail.com",
+    "phone": "09494607966",
+    "password": "pec@123",
+    "work": "",
+    "dob": "2006-06-15",
+    "role": "non",
+    "address": "prathyusha engineering college, Tiruvallur road,Aranvoyal kuppam, Tiruvallur",
+    "city": "Chennai",
+    "state": "Tamil Nadu",
+    "pincode": "602025",
+    "country": "India",
+    "photo": "/static/uploads/20260302133722_logo.jpg"
+}

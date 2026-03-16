@@ -8,9 +8,9 @@
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 
-<body class="flex bg-gray-100">
+<body class="flex bg-gray-100 h-screen overflow-hidden">
   <!-- Sidebar -->
-  <aside class="w-64 bg-[#170606] text-white min-h-screen flex flex-col justify-between">
+  <aside class="w-64 bg-[#170606] text-white min-h-screen flex flex-col justify-between fixed h-full z-10">
     <div>
       <nav>
         <ul>
@@ -19,6 +19,10 @@
           <li class="px-6 py-3 hover:bg-indigo-700 cursor-pointer">
             <a href="{{ url_for('application_form') }}">Application Form</a>
           </li>
+          <li class="px-6 py-3 hover:bg-indigo-700 cursor-pointer">
+            <a href="{{ url_for('conform_application', page='first.html') }}" target="_blank">Conform Application
+              Form</a>
+          </li>
           <li class="px-6 py-3 hover:bg-indigo-700 cursor-pointer" onclick="showSection('feedback')">Feedback</li>
         </ul>
       </nav>
@@ -26,7 +30,8 @@
     <div class="px-6 py-3 hover:bg-indigo-700 cursor-pointer" onclick="showSection('profile')">Profile</div>
   </aside>
 
-  <div class="flex-1 flex flex-col">
+  <!-- Main Content Wrapper -->
+  <div class="flex-1 flex flex-col ml-64 h-full">
     <!-- Top Navigation -->
     <header class="bg-[#B20808] text-white px-6 py-4 flex justify-between items-center">
       <h1 class="text-2xl font-bold" id="headerTitle">Coordinator Dashboard</h1>
@@ -52,27 +57,35 @@
       <div id="dashboardSection">
         <h2 class="text-xl font-bold mb-4">Dashboard Overview</h2>
         <div class="grid grid-cols-2 gap-6 mb-6">
-          <div class="bg-white shadow rounded-lg p-6">
+          <div class="bg-white shadow rounded-lg p-6" style="width: 300px; height: 190px;">
             <h3 class="font-bold">Total Admissions</h3>
             <p id="totalAdmissions" class="text-2xl mt-2">0</p>
           </div>
-          <div class="bg-white shadow rounded-lg p-6">
-            <h3 class="font-bold">Notifications</h3>
-            <ul id="notificationList" class="mt-2 list-disc list-inside text-gray-700"></ul>
+          <div class="grid grid-cols-2 gap-6 mb-6">
+            <div class="bg-white shadow rounded-lg p-6"
+              style="margin-left: -300px; margin-right: 300px; padding-bottom: 100px; width: 300px;">
+              <h3 class="font-bold">Visited</h3>
+              <p id="totalVisited" class="text-2xl mt-2">0</p>
+            </div>
+            <div class="bg-white shadow rounded-lg p-6" style="width: 300px; margin-left: -280px;">
+              <h3 class="font-bold">Notifications</h3>
+              <ul id="notificationList" class="mt-2 list-disc list-inside text-gray-700"></ul>
+            </div>
           </div>
-        </div>
-        <div class="bg-white shadow rounded-lg p-6 flex items-center justify-between max-w-xl">
-          <div class="flex flex-col">
-            <p><strong>Name:</strong> {{ coordinator_data['first_name'] }} {{ coordinator_data['last_name'] }}</p>
-            <p><strong>Email:</strong> {{ coordinator_data['email'] }}</p>
-            <p><strong>Phone:</strong> {{ coordinator_data['phone'] }}</p>
-            <p style="margin-top:6px;color:#666;font-size:13px"><strong>Department:</strong> {{ coordinator_data['work']
-              }}</p>
-          </div>
-          <div class="flex flex-col items-center">
-            <img src="{{ coordinator_data['photo'] or 'https://via.placeholder.com/100' }}" alt="Coordinator Photo"
-              class="rounded-full w-24 h-24 object-cover" id="hi">
-            <div style="font-size:13px;color:#666;margin-top:6px">Profile Photo</div>
+          <div class="bg-white shadow rounded-lg p-6 flex items-center justify-between max-w-xl">
+            <div class="flex flex-col">
+              <p><strong>Name:</strong> {{ coordinator_data['first_name'] }} {{ coordinator_data['last_name'] }}</p>
+              <p><strong>Email:</strong> {{ coordinator_data['email'] }}</p>
+              <p><strong>Phone:</strong> {{ coordinator_data['phone'] }}</p>
+              <p style="margin-top:6px;color:#666;font-size:13px"><strong>Department:</strong> {{
+                coordinator_data['work']
+                }}</p>
+            </div>
+            <div class="flex flex-col items-center">
+              <img src="{{ coordinator_data['photo'] or 'https://via.placeholder.com/100' }}" alt="Coordinator Photo"
+                class="rounded-full w-24 h-24 object-cover" id="hi">
+              <div style="font-size:13px;color:#666;margin-top:6px">Profile Photo</div>
+            </div>
           </div>
         </div>
       </div>
@@ -272,14 +285,15 @@
             <td class="py-2 px-4">${s.next_visit || "-"}</td>
             <td class="py-2 px-4">
                <button class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600"
-                  onclick="window.location.href='/application_form?view=${s.application_number}'">
+                  onclick="viewApplication('${s.application_number}', '${s.status}')">
                   View
                </button>
             </td>
           </tr>`;
         });
       }
-      document.getElementById('totalAdmissions').innerText = (students || []).length;
+      document.getElementById('totalAdmissions').innerText = (students || []).filter(s => s.status === 'confirmed').length;
+      document.getElementById('totalVisited').innerText = (students || []).filter(s => s.status === 'visited' || s.status === 'confirmed').length;
     }
 
     function populateFeedbackDropdown() {
@@ -462,7 +476,7 @@
         const rows = (data.students || []);
         if (rows.length === 0) {
           tbody.innerHTML = `<tr><td colspan="6" class="py-4 px-4 text-center text-gray-600">No data found</td></tr>`;
-          document.getElementById('totalAdmissions').innerText = 0;
+          document.getElementById('totalAdmissions').innerText = students.filter(s => s.status === 'confirmed').length;
           return;
         }
 
@@ -474,15 +488,28 @@
                         <td class="py-3 px-4">${student.preferred_branch || ''}</td>
                         <td class="py-3 px-4">${student.mobile || '-'}</td>
                         <td class="py-3 px-4">${student.address || '-'}</td>
-                        <td class="py-3 px-4">${student.next_visit || '-'}</td>
-                    </tr>
+                        <td class="py-3 px-4">
+                            <button class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600"
+                                onclick="viewApplication('${student.application_number}', '${student.status || ''}')">
+                                View
+                            </button>
+                        </td>
                 `;
         });
-        document.getElementById('totalAdmissions').innerText = rows.length;
+        document.getElementById('totalAdmissions').innerText = rows.filter(s => s.status === 'confirmed').length;
       } catch (error) {
         console.error('Error searching students:', error);
         const tbody = document.getElementById('studentTableBody');
         tbody.innerHTML = `<tr><td colspan="6" class="py-4 px-4 text-center text-red-600">Error fetching data</td></tr>`;
+      }
+    }
+
+    // Smart view: show confirm form if status=confirmed, else normal form
+    function viewApplication(appNumber, status) {
+      if (status === 'confirmed') {
+        window.open('/view_confirm_application?app_no=' + encodeURIComponent(appNumber), '_blank');
+      } else {
+        window.location.href = '/application_form?view=' + encodeURIComponent(appNumber);
       }
     }
 

@@ -6,6 +6,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Admin Dashboard - PEC</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
   <style>
     :root {
       --accent: #a60000;
@@ -192,7 +195,28 @@
       padding: 14px;
       border-radius: 10px;
       box-shadow: 0 3px 8px rgba(0, 0, 0, 0.12);
-      text-align: center
+      text-align: center;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+      user-select: none;
+    }
+
+    .counter-card:hover {
+      box-shadow: 0 6px 16px rgba(166, 0, 0, 0.15);
+      border-color: var(--accent);
+    }
+
+    .counter-card.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      box-shadow: 0 6px 16px rgba(166, 0, 0, 0.3);
+    }
+
+    .counter-card.active h3,
+    .counter-card.active p {
+      color: #fff;
     }
 
     .counter-card h3 {
@@ -477,26 +501,48 @@
 
       <!-- Counters -->
       <div class="counters">
-        <div class="counter-card">
+        <div class="counter-card active" id="cardAdmissions" onclick="switchChartMode('admissions')"
+          title="Click to view Admissions charts">
           <h3 id="admissionsCount">0</h3>
           <p>Total Admissions</p>
+          <div style="font-size:11px;margin-top:4px;opacity:0.8">📊 Click to filter charts</div>
         </div>
-        <div class="counter-card">
+        <div class="counter-card" id="cardVisited" onclick="switchChartMode('visited')"
+          title="Click to view Visited charts">
           <h3 id="enrollmentsCount">0</h3>
-          <p>Total Enrollments</p>
+          <p>Total Visited</p>
+          <div style="font-size:11px;margin-top:4px;opacity:0.8">📊 Click to filter charts</div>
         </div>
+      </div>
+      <div style="text-align:right;margin-top:-10px;margin-bottom:6px;">
+        <span id="counterYearLabel" style="font-size:12px;color:#888;font-style:italic;">Showing: All Years</span>
+      </div>
+
+      <!-- Shared controls: Academic Year + Graph Type -->
+      <div
+        style="display:flex;align-items:center;flex-wrap:wrap;gap:18px;margin-bottom:12px;background:#fff;padding:10px 16px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,0.09)">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:13px;font-weight:600;color:#444">📅 Academic Year:</span>
+          <select id="chartYearSelect" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px">
+            <option value="all" selected>All Years</option>
+            <!-- Year options added dynamically from API -->
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:13px;font-weight:600;color:#444">📊 View:</span>
+          <select id="graphType" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px">
+            <option value="yearly" selected>All Years</option>
+            <option value="monthly">Monthly (Full Year)</option>
+            <option value="weekly">Weekly (Last 7 Days)</option>
+          </select>
+        </div>
+        <span id="chartSubtitle" style="font-size:12px;color:#888;font-style:italic"></span>
       </div>
 
       <div class="charts-row">
-        <!-- Admissions Bar Chart -->
+        <!-- Bar Chart -->
         <div class="card">
-          <h2>Admissions Overview</h2>
-          <label for="graphType" style="font-size:13px;color:#444">Select Graph:</label>
-          <select id="graphType" style="margin:6px 0;padding:6px;border-radius:6px;border:1px solid #ccc">
-            <option value="weekly" selected>Weekly</option>
-            <option value="monthly">Monthly</option>
-            <option value="yearly">Yearly</option>
-          </select>
+          <h2 id="barChartTitle">Admissions Overview (Confirmed)</h2>
           <div class="chart-container">
             <canvas id="admissionsChart"></canvas>
           </div>
@@ -504,11 +550,8 @@
 
         <!-- Pie Chart -->
         <div class="card">
-          <h2>Department-wise Enrollment</h2>
-          <label for="yearSelect" style="font-size:13px;color:#444">Select Academic Year:</label>
-          <select id="yearSelect" style="margin:6px 0;padding:6px;border-radius:6px;border:1px solid #ccc">
-            <option value="2023" selected>2023-2024</option>
-          </select>
+          <h2 id="pieChartTitle">Department-wise Admissions</h2>
+          <p id="pieYearLabel" style="font-size:12px;color:#888;margin:0 0 6px"></p>
           <div class="chart-container" style="position:relative">
             <canvas id="studentsPieChart"></canvas>
             <div id="pieTooltip" class="pie-tooltip"></div>
@@ -554,6 +597,18 @@
         <h2>Add Coordinator</h2>
         <button class="action-btn" onclick="openAddCoordinatorModal()">Add New Coordinator</button>
       </div>
+
+      <!-- Year Filter Bar for Coordinators -->
+      <div
+        style="display:flex;align-items:center;gap:14px;margin-bottom:14px;background:#fff;padding:10px 16px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,0.09);flex-wrap:wrap;">
+        <span style="font-size:13px;font-weight:600;color:#444;">📅 Academic Year:</span>
+        <select id="coordYearSelect" style="padding:6px 12px;border-radius:6px;border:1px solid #ccc;font-size:13px;">
+          <option value="all" selected>All Years</option>
+          <!-- Year options populated by JS after first API call -->
+        </select>
+        <span id="coordYearLabel" style="font-size:12px;color:#888;font-style:italic;">Showing: All Years</span>
+      </div>
+
       <div class="card">
         <h2>Coordinators</h2>
         <div id="coordinatorGrid" style="display: flex; flex-wrap: wrap; gap: 18px;">
@@ -589,6 +644,32 @@
     <div id="viewSection" style="display:none; margin-top:14px;">
       <div class="card">
         <h2>Coordinator Work Data</h2>
+
+        <!-- Filters -->
+        <div class="flex flex-wrap gap-2 mb-4" style="display: flex; gap: 8px; margin-top: 14px; margin-bottom: 14px;">
+          <input type="date" id="startDate" class="px-4 py-2 border rounded-md"
+            style="padding: 8px; border-radius: 6px; border: 1px solid #ccc;">
+          <input type="date" id="endDate" class="px-4 py-2 border rounded-md"
+            style="padding: 8px; border-radius: 6px; border: 1px solid #ccc;">
+          <select id="prefBranch" style="padding: 8px; border-radius: 6px; border: 1px solid #ccc; min-width: 180px;">
+            <option value="">All Branches</option>
+            <option value="CSE">CSE</option>
+            <option value="ECE">ECE</option>
+            <option value="AIDS">AI&DS</option>
+            <option value="CSBS">CSBS</option>
+            <option value="MECH">MECH</option>
+            <option value="CIVIL">CIVIL</option>
+          </select>
+          <select id="filterStatus" style="padding: 8px; border-radius: 6px; border: 1px solid #ccc; min-width: 150px;">
+            <option value="">All Status</option>
+            <option value="visited">Visited</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="pending">Pending</option>
+          </select>
+          <button id="downloadExcelBtn" class="action-btn" style="background: var(--accent); color: white;">Download
+            Excel</button>
+          <button id="downloadPdfBtn" class="action-btn" style="background: #444; color: white;">Download PDF</button>
+        </div>
         <h3 style="margin-top:10px; color: var(--accent); display: flex; align-items: center;">
           Today’s Data
           <span id="todayDate" style="font-size:13px; color:#444; margin-left:12px;"></span>
@@ -808,7 +889,7 @@
     <div id="deleteConfirmModal" class="modal">
       <div class="modal-content" style="max-width:350px;text-align:center;">
         <h3>Are you sure?</h3>
-        <p>Do you really want to delete this application?</p>
+        <p>Do you really want to delete the feedback for this application?</p>
         <div style="margin-top:14px;">
           <button class="action-btn" onclick="confirmDeleteFeedback()">Yes</button>
           <button class="action-btn" onclick="closeDeleteConfirmModal()"
@@ -844,28 +925,152 @@
       let feedbackData = [];
       let admissionsChart = null;
       let studentsPieChart = null;
+      let currentStatsData = null;  // cached full API response
+      let currentChartMode = 'admissions'; // 'admissions' or 'visited'
 
       // --- API Fetch Functions ---
 
-      async function fetchStats() {
+      // Track whether year dropdown has been populated from the API
+      let yearDropdownPopulated = false;
+
+      async function fetchStats(yearOverride) {
         try {
-          const res = await fetch('/api/admin/stats');
+          const yearSel = document.getElementById('chartYearSelect');
+          // Determine which year to fetch
+          let year;
+          if (yearOverride !== undefined) {
+            year = yearOverride;
+            // Sync dropdown to the requested year
+            if (yearSel) yearSel.value = year;
+          } else {
+            year = (yearSel && yearSel.value) ? yearSel.value : 'all';
+          }
+
+          const url = (year && year !== 'all') ? `/api/admin/stats?year=${year}` : '/api/admin/stats?year=all';
+          const res = await fetch(url);
           const data = await res.json();
           if (data.error) return;
 
-          // Counters
-          document.getElementById("admissionsCount").innerText = data.counters.admissions;
-          document.getElementById("enrollmentsCount").innerText = data.counters.enrollments;
+          currentStatsData = data;
 
-          // Charts
-          updateCharts(data.charts);
+          // Populate academic year dropdown from all_years — ONLY ONCE
+          if (!yearDropdownPopulated && data.meta && data.meta.all_years) {
+            const sel = document.getElementById('chartYearSelect');
+            if (sel) {
+              // Keep existing selected value
+              const currentSel = year;
+              // Remove any placeholder children (keep the static "All Years" option)
+              // Clear and rebuild from scratch to be safe
+              sel.innerHTML = '';
+              // All Years option
+              const allOpt = document.createElement('option');
+              allOpt.value = 'all';
+              allOpt.textContent = 'All Years';
+              if (currentSel === 'all' || !currentSel) allOpt.selected = true;
+              sel.appendChild(allOpt);
+              // Individual year options
+              data.meta.all_years.forEach(yr => {
+                const opt = document.createElement('option');
+                opt.value = String(yr);               // e.g. "2025"
+                opt.textContent = `${yr}-${yr + 1}`; // e.g. "2025-2026"
+                if (String(yr) === String(currentSel)) opt.selected = true;
+                sel.appendChild(opt);
+              });
+              yearDropdownPopulated = true;
+            }
+          }
+
+          // Determine the final selected value (after dropdown is updated)
+          const finalYear = yearSel ? yearSel.value : (year || 'all');
+          const yearLabel = (finalYear === 'all' || !finalYear)
+            ? 'All Years'
+            : `${finalYear}-${parseInt(finalYear) + 1}`;
+
+          // Update counter label
+          const ctxLabel = document.getElementById('counterYearLabel');
+          if (ctxLabel) ctxLabel.textContent = `Showing: ${yearLabel}`;
+
+          // Update counters
+          document.getElementById('admissionsCount').innerText = data.counters.admissions;
+          document.getElementById('enrollmentsCount').innerText = data.counters.enrollments;
+
+          // Render charts for current mode
+          const chartKey = currentChartMode === 'visited' ? 'visited_charts' : 'admissions_charts';
+          updateCharts(data[chartKey]);
         } catch (e) { console.error(e); }
       }
 
-      async function fetchCoordinators() {
+      function switchChartMode(mode) {
+        if (!currentStatsData) return;
+        currentChartMode = mode;
+
+        // Highlight active counter card
+        document.getElementById('cardAdmissions').classList.toggle('active', mode === 'admissions');
+        document.getElementById('cardVisited').classList.toggle('active', mode === 'visited');
+
+        // Update titles
+        const barTitle = document.getElementById('barChartTitle');
+        const pieTitle = document.getElementById('pieChartTitle');
+        const summaryTitle = document.querySelector('#admissionsDataTable').previousElementSibling;
+        if (barTitle) barTitle.textContent = mode === 'admissions' ? 'Admissions Overview (Confirmed)' : 'Visited Overview (All Students)';
+        if (pieTitle) pieTitle.textContent = mode === 'admissions' ? 'Department-wise Admissions' : 'Department-wise All Students';
+        if (summaryTitle) summaryTitle.textContent = mode === 'admissions' ? 'Admissions Data (current view)' : 'All Students Data (current view)';
+
+        const chartKey = mode === 'visited' ? 'visited_charts' : 'admissions_charts';
+        updateCharts(currentStatsData[chartKey]);
+      }
+
+      // Track whether coord year dropdown has been populated
+      let coordYearDropdownPopulated = false;
+
+      async function fetchCoordinators(yearOverride) {
         try {
-          const res = await fetch('/api/admin/coordinators');
+          const coordSel = document.getElementById('coordYearSelect');
+          let year;
+          if (yearOverride !== undefined) {
+            year = yearOverride;
+            if (coordSel) coordSel.value = year;
+          } else {
+            year = coordSel ? coordSel.value : 'all';
+          }
+
+          const url = (year && year !== 'all')
+            ? `/api/admin/coordinators?year=${year}`
+            : '/api/admin/coordinators?year=all';
+
+          const res = await fetch(url);
           coordinators = await res.json();
+
+          // Populate year dropdown from current dashboard years (shared meta) — ONCE
+          if (!coordYearDropdownPopulated && currentStatsData && currentStatsData.meta && currentStatsData.meta.all_years) {
+            const sel = document.getElementById('coordYearSelect');
+            if (sel) {
+              const currentSel = year;
+              sel.innerHTML = '';
+              const allOpt = document.createElement('option');
+              allOpt.value = 'all';
+              allOpt.textContent = 'All Years';
+              if (currentSel === 'all' || !currentSel) allOpt.selected = true;
+              sel.appendChild(allOpt);
+              currentStatsData.meta.all_years.forEach(yr => {
+                const opt = document.createElement('option');
+                opt.value = String(yr);
+                opt.textContent = `${yr}-${yr + 1}`;
+                if (String(yr) === String(currentSel)) opt.selected = true;
+                sel.appendChild(opt);
+              });
+              coordYearDropdownPopulated = true;
+            }
+          }
+
+          // Update label
+          const finalYear = coordSel ? coordSel.value : (year || 'all');
+          const coordLabel = (finalYear === 'all' || !finalYear)
+            ? 'All Years'
+            : `${finalYear}-${parseInt(finalYear) + 1}`;
+          const lbl = document.getElementById('coordYearLabel');
+          if (lbl) lbl.textContent = `Showing: ${coordLabel}`;
+
           renderCoordinatorGrid();
         } catch (e) { console.error(e); }
       }
@@ -878,11 +1083,37 @@
         } catch (e) { console.error(e); }
       }
 
+      let filteredToday = null;
+      let filteredYesterday = null;
+
       async function fetchWorkLog() {
         try {
           const res = await fetch('/api/admin/work-log');
           const data = await res.json();
           if (data.error) return;
+
+          // Apply filters (date, branch, status)
+          const startDateVal = document.getElementById('startDate').value;
+          const endDateVal = document.getElementById('endDate').value;
+          const branchVal = document.getElementById('prefBranch').value;
+          const statusVal = document.getElementById('filterStatus').value;
+
+          let listToday = data.today || [];
+          let listYesterday = data.yesterday || [];
+
+          const applyFilters = (list) => list.filter(item => {
+            // Branch filter
+            if (branchVal && item.branch !== branchVal) return false;
+            // Status filter
+            if (statusVal && (item.status || '').toLowerCase() !== statusVal.toLowerCase()) return false;
+            return true;
+          });
+
+          listToday = applyFilters(listToday);
+          listYesterday = applyFilters(listYesterday);
+
+          filteredToday = listToday;
+          filteredYesterday = listYesterday;
 
           const renderRows = (list, tableId) => {
             const tbody = document.querySelector(`#${tableId} tbody`);
@@ -898,8 +1129,8 @@
             });
           };
 
-          renderRows(data.today, 'todayWorkTable');
-          renderRows(data.yesterday, 'yesterdayWorkTable');
+          renderRows(listToday, 'todayWorkTable');
+          renderRows(listYesterday, 'yesterdayWorkTable');
 
           // Dates
           document.getElementById('todayDate').innerText = new Date().toLocaleDateString();
@@ -913,69 +1144,139 @@
 
       // 1. Charts
       function updateCharts(chartsData) {
-        // Bar Chart
-        const barCtx = document.getElementById("admissionsChart").getContext("2d");
-        const type = document.getElementById("graphType").value; // weekly, monthly...
-        // For simplicity, we assume API returns structure matching selection or we map it. 
-        // In this implementation, API returns all. We pick based on selection.
+        if (!chartsData) return;
+        const type = document.getElementById('graphType').value;
+        const barLabel = currentChartMode === 'visited' ? 'All Students (Visited)' : 'Admissions (Confirmed)';
+        const barColor = currentChartMode === 'visited' ? '#17a2b8' : '#a60000';
 
-        let labelSet, dataSet, color;
+        // Determine selected academic year — handle 'all' safely
+        const yearSel = document.getElementById('chartYearSelect');
+        const yearVal = yearSel ? yearSel.value : 'all';
+        const isAllYears = (yearVal === 'all' || yearVal === '');
+        // For 'all', fall back to current year for monthly labels (matches backend behaviour)
+        const selYear = isAllYears
+          ? (currentStatsData && currentStatsData.meta ? currentStatsData.meta.cur_year : new Date().getFullYear())
+          : parseInt(yearVal);
+        const acLabel = isAllYears ? 'All Years' : `${selYear}-${selYear + 1}`;
+
+        let labelSet, dataSet;
         if (type === 'monthly') {
-          labelSet = chartsData.monthly.labels;
+          // Always 12 months (Jan-Dec) of the selected year
+          const mnths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          labelSet = mnths.map(m => `${m} ${selYear}`);
           dataSet = chartsData.monthly.data;
-          color = "#28a745";
+          // Update subtitle
+          const sub = document.getElementById('chartSubtitle');
+          if (sub) sub.textContent = isAllYears ? `Showing all 12 months for current year` : `Showing all 12 months for ${acLabel}`;
         } else if (type === 'yearly') {
-          // Mock yearly or use monthly year data
-          labelSet = [chartsData.monthly.year];
-          dataSet = [chartsData.monthly.data.reduce((a, b) => a + b, 0)];
-          color = "#ffc107";
+          // One bar per year (all years in DB)
+          labelSet = chartsData.yearly ? chartsData.yearly.labels : [];
+          dataSet = chartsData.yearly ? chartsData.yearly.data : [];
+          const sub = document.getElementById('chartSubtitle');
+          if (sub) sub.textContent = `Showing all available years`;
         } else {
-          // Weekly default
+          // Weekly — last 7 days, year filter doesn't apply
           labelSet = chartsData.weekly.labels;
           dataSet = chartsData.weekly.data;
-          color = "#007bff";
+          const sub = document.getElementById('chartSubtitle');
+          if (sub) sub.textContent = `Showing last 7 days`;
         }
 
+        // Update pie year label
+        const pieYearLbl = document.getElementById('pieYearLabel');
+        if (pieYearLbl) pieYearLbl.textContent = `Data filtered for: ${acLabel}`;
+
+        // Bar chart
         if (admissionsChart) admissionsChart.destroy();
-        admissionsChart = new Chart(barCtx, {
-          type: "bar",
-          data: { labels: labelSet, datasets: [{ label: "Admissions", data: dataSet, backgroundColor: color }] },
-          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false } }, y: { beginAtZero: true } } }
-        });
+        admissionsChart = new Chart(
+          document.getElementById('admissionsChart').getContext('2d'),
+          {
+            type: 'bar',
+            data: {
+              labels: labelSet,
+              datasets: [{
+                label: barLabel,
+                data: dataSet,
+                backgroundColor: barColor,
+                borderRadius: 4
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: { legend: { display: true, position: 'top' } },
+              scales: {
+                x: { grid: { display: false }, ticks: { maxRotation: 45, minRotation: 0 } },
+                y: { beginAtZero: true, ticks: { stepSize: 1 } }
+              }
+            }
+          }
+        );
 
-        // Update Data Summary Table (Admissions)
-        const tbody = document.querySelector("#admissionsDataTable tbody");
-        tbody.innerHTML = "";
+        // Data Summary Table
+        const tbody = document.querySelector('#admissionsDataTable tbody');
+        tbody.innerHTML = '';
         for (let i = 0; i < labelSet.length; i++) {
-          const tr = document.createElement("tr");
+          const tr = document.createElement('tr');
           tr.innerHTML = `<td>${labelSet[i]}</td><td>${dataSet[i]}</td>`;
-          tbody.appendChild(tr)
+          tbody.appendChild(tr);
         }
 
-        // Pie Chart
-        const pieCtx = document.getElementById("studentsPieChart").getContext("2d");
+        // Pie chart — dept breakdown (already filtered by year in backend)
         const pieLabels = chartsData.dept.labels;
         const pieValues = chartsData.dept.data;
-        const pieColors = ["#007bff", "#28a745", "#ffc107", "#dc3545", "#17a2b8", "#6f42c1", "#fd7e14"]; // Cycle if needed
+        const pieColors = ['#a60000', '#007bff', '#28a745', '#ffc107', '#17a2b8', '#6f42c1', '#fd7e14', '#e83e8c'];
 
         if (studentsPieChart) studentsPieChart.destroy();
-        studentsPieChart = new Chart(pieCtx, {
-          type: "pie",
-          data: { labels: pieLabels, datasets: [{ data: pieValues, backgroundColor: pieColors.slice(0, pieLabels.length) }] },
-          options: { responsive: true, maintainAspectRatio: false }
-        });
+        if (pieLabels.length === 0) {
+          studentsPieChart = null;
+        } else {
+          studentsPieChart = new Chart(
+            document.getElementById('studentsPieChart').getContext('2d'),
+            {
+              type: 'pie',
+              data: {
+                labels: pieLabels,
+                datasets: [{ data: pieValues, backgroundColor: pieColors.slice(0, pieLabels.length) }]
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                  legend: { position: 'bottom', labels: { font: { size: 12 } } },
+                  tooltip: {
+                    callbacks: {
+                      label: function (ctx) {
+                        const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                        const pct = total ? Math.round(ctx.parsed / total * 100) : 0;
+                        return ` ${ctx.label}: ${ctx.parsed} (${pct}%)`;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          );
+        }
 
-        // Update Dept Table
-        const deptBody = document.querySelector("#deptDataTable tbody");
-        deptBody.innerHTML = "";
+        // Dept Table
+        const deptBody = document.querySelector('#deptDataTable tbody');
+        deptBody.innerHTML = '';
         for (let i = 0; i < pieLabels.length; i++) {
-          const tr = document.createElement("tr");
+          const tr = document.createElement('tr');
           tr.innerHTML = `<td>${pieLabels[i]}</td><td>${pieValues[i]}</td>`;
-          deptBody.appendChild(tr)
+          deptBody.appendChild(tr);
         }
       }
 
-      document.getElementById("graphType").addEventListener("change", () => fetchStats()); // Reload stats/chart on change
+      // Refresh charts when graph view type changes (keeps selected year)
+      document.getElementById('graphType').addEventListener('change', () => fetchStats());
+
+      // Refresh counters + charts when academic year changes
+      document.getElementById('chartYearSelect').addEventListener('change', function () {
+        const selectedYear = this.value; // 'all' or e.g. '2025'
+        fetchStats(selectedYear);
+      });
 
       // 2. Coordinators
       let currentCoordinatorIdx = null;
@@ -989,16 +1290,27 @@
           return;
         }
 
+        // Determine year label for the badge subtitle
+        const coordSel = document.getElementById('coordYearSelect');
+        const coordYear = coordSel ? coordSel.value : 'all';
+        const yearBadgeLabel = (coordYear === 'all' || !coordYear)
+          ? 'All Years'
+          : `${coordYear}-${parseInt(coordYear) + 1}`;
+
         coordinators.forEach((c, idx) => {
           const card = document.createElement("div");
           card.className = "coordinator-card";
-          card.style = "width:180px;background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,0.08);padding:16px;text-align:center;cursor:pointer;transition:box-shadow 0.2s;position:relative;";
+          card.style = "width:190px;background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,0.08);padding:16px;text-align:center;cursor:pointer;transition:box-shadow 0.2s;position:relative;";
           card.innerHTML = `
-          <img src="${c.photo}" alt="Profile" style="width:70px;height:70px;border-radius:50%;border:2px solid var(--accent);object-fit:cover;">
-          <div style="margin-top:8px;font-weight:bold;">${c.username}</div>
-          <div style="color:#888;font-size:13px;">${c.email}</div>
-          <button class="action-btn" style="position:absolute;top:8px;right:8px;padding:2px 8px;font-size:13px;" onclick="event.stopPropagation();deleteCoordinator(${c.id});">Delete</button>
-        `;
+            <img src="${c.photo}" alt="Profile" style="width:70px;height:70px;border-radius:50%;border:2px solid var(--accent);object-fit:cover;">
+            <div style="margin-top:8px;font-weight:bold;font-size:14px;">${c.username}</div>
+            <div style="color:#888;font-size:12px;margin-bottom:6px;">${c.email}</div>
+            <div style="background:var(--accent);color:#fff;border-radius:20px;padding:4px 10px;font-size:13px;font-weight:600;display:inline-block;margin-bottom:2px;">
+              ${c.admissions} Admission${c.admissions !== 1 ? 's' : ''}
+            </div>
+            <div style="font-size:11px;color:#aaa;margin-top:2px;">${yearBadgeLabel}</div>
+            <button class="action-btn" style="position:absolute;top:8px;right:8px;padding:2px 8px;font-size:12px;" onclick="event.stopPropagation();deleteCoordinator(${c.id});">Delete</button>
+          `;
           card.onclick = () => showCoordinatorProfileModal(idx);
           grid.appendChild(card);
         });
@@ -1028,8 +1340,11 @@
       async function deleteCoordinator(id) {
         if (!confirm("Are you sure?")) return;
         const res = await fetch(`/api/admin/coordinators?id=${id}`, { method: 'DELETE' });
-        if (res.ok) fetchCoordinators();
-        else alert("Failed to delete");
+        if (res.ok) {
+          // Re-fetch keeping the currently selected year
+          const coordSel = document.getElementById('coordYearSelect');
+          fetchCoordinators(coordSel ? coordSel.value : 'all');
+        } else alert("Failed to delete");
       }
 
       function closeCoordinatorProfileModal() {
@@ -1158,13 +1473,13 @@
       }
       async function confirmDeleteFeedback() {
         if (appToDelete) {
-          const res = await fetch('/delete_application', {
+          const res = await fetch('/delete_feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ application_number: appToDelete })
           });
           if (res.ok) {
-            alert("Application deleted!");
+            alert("Feedback deleted!");
             fetchFeedback();
           } else {
             alert("Delete failed");
@@ -1286,7 +1601,6 @@
 
       // Initial Load
       showSection('dashboard');
-      fetchCoordinators();
       fetchStats();
       // Notifications toggle
       function toggleNotifications() {
@@ -1304,6 +1618,44 @@
           reader.readAsDataURL(this.files[0]);
         }
       });
+
+      // Coordinator year filter — refresh cards when year changes
+      document.getElementById('coordYearSelect').addEventListener('change', function () {
+        fetchCoordinators(this.value); // 'all' or e.g. '2025'
+      });
+
+      // Filter and Export Logic - re-run fetchWorkLog on any filter change
+      document.getElementById('startDate').addEventListener('change', fetchWorkLog);
+      document.getElementById('endDate').addEventListener('change', fetchWorkLog);
+      document.getElementById('prefBranch').addEventListener('change', fetchWorkLog);
+      document.getElementById('filterStatus').addEventListener('change', fetchWorkLog);
+
+      function exportToExcel() {
+        const start = document.getElementById("startDate").value || "2000-01-01";
+        const end = document.getElementById("endDate").value || "2099-12-31";
+        const branch = document.getElementById("prefBranch").value;
+        const status = document.getElementById("filterStatus").value;
+        const params = new URLSearchParams({ start_date: start, end_date: end });
+        if (branch) params.append('branch', branch);
+        if (status) params.append('status', status);
+        window.location.href = `/download_excel?${params.toString()}`;
+      }
+
+      function exportToPDF() {
+        const start = document.getElementById("startDate").value || "2000-01-01";
+        const end = document.getElementById("endDate").value || "2099-12-31";
+        const branch = document.getElementById("prefBranch").value;
+        const status = document.getElementById("filterStatus").value;
+        const params = new URLSearchParams({ start_date: start, end_date: end });
+        if (branch) params.append('branch', branch);
+        if (status) params.append('status', status);
+        window.location.href = `/download_pdf?${params.toString()}`;
+      }
+
+      document.getElementById("downloadExcelBtn").addEventListener("click", exportToExcel);
+      document.getElementById("downloadPdfBtn").addEventListener("click", exportToPDF);
+
+      // We will override fetchStats logic to support filtering by date based on UI
     </script>
 </body>
 

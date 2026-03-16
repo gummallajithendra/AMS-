@@ -61,7 +61,7 @@ def reserve_new_application_number(coordinator_name=None):
         password=DB_PASSWORD,
         database=DB_NAME
     )
-    cur = conn.cursor(dictionary=True)
+    cur = conn.cursor(dictionary=True, buffered=True)
     try:
         conn.start_transaction()
         
@@ -109,7 +109,7 @@ def get_next_application_number_preview():
         password=DB_PASSWORD,
         database=DB_NAME
     )
-    cur = conn.cursor(dictionary=True)
+    cur = conn.cursor(dictionary=True, buffered=True)
     try:
         current_year = datetime.datetime.now().year
         pattern = f"PEC{current_year}%"
@@ -129,18 +129,19 @@ def get_next_application_number_preview():
         conn.close()
 
 
-def finalize_save_application(application_number, student_name, father_name, preferred_branch, form_data=None, coordinator_name=None):
+def finalize_save_application(application_number, student_name, father_name, preferred_branch, form_data=None, coordinator_name=None, form_type='normal'):
     """
     Finalize (save) the application: update reserved row to submitted and add fields.
     If reservation doesn't exist, create a new submitted row.
     """
+    new_status = 'confirmed' if form_type == 'confirm' else 'visited'
     db = mysql.connector.connect(
         host=DB_HOST,
         user=DB_USER,
         password=DB_PASSWORD,
         database=DB_NAME
     )
-    cur = db.cursor(dictionary=True)
+    cur = db.cursor(dictionary=True, buffered=True)
     try:
         # Check if application exists
         cur.execute("SELECT id FROM applications WHERE application_number = %s", (application_number,))
@@ -151,11 +152,11 @@ def finalize_save_application(application_number, student_name, father_name, pre
             # update existing reserved row
             cur.execute("""
                 UPDATE applications
-                SET student_name=%s, father_name=%s, preferred_branch=%s, status='submitted',
+                SET student_name=%s, father_name=%s, preferred_branch=%s, status=%s,
                     form_data=%s, date_submitted=%s, coordinator=%s
                 WHERE application_number=%s
             """, (
-                student_name, father_name, preferred_branch,
+                student_name, father_name, preferred_branch, new_status,
                 json.dumps(form_data) if form_data is not None else None,
                 now, coordinator_name or '', application_number
             ))
@@ -169,8 +170,8 @@ def finalize_save_application(application_number, student_name, father_name, pre
             
             cur.execute("""
                 INSERT INTO applications (application_number, numeric_part, student_name, father_name, preferred_branch, status, form_data, date_opened, date_submitted, coordinator)
-                VALUES (%s, %s, %s, %s, %s, 'submitted', %s, %s, %s, %s)
-            """, (application_number, numeric_part, student_name, father_name, preferred_branch,
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (application_number, numeric_part, student_name, father_name, preferred_branch, new_status,
                   json.dumps(form_data) if form_data is not None else None, now, now, coordinator_name or ''))
         db.commit()
     except Exception as e:
@@ -410,7 +411,7 @@ def coordinator_dashboard():
         return redirect(url_for('coordinator_page'))
 
     db = get_db()
-    cursor = db.cursor(dictionary=True)
+    cursor = db.cursor(dictionary=True, buffered=True)
     # Include photo in query
     cursor.execute("""
         SELECT first_name, last_name, email, phone, work, photo
@@ -457,7 +458,7 @@ def get_coordinator_applications():
             SELECT application_number, student_name, father_name, preferred_branch,
                    mobile, address, status, date_submitted, form_data, feedback, next_visit
             FROM applications
-            WHERE coordinator = %s AND status = 'submitted'
+            WHERE coordinator = %s AND status IN ('visited', 'confirmed')
         """, (session.get('coordinator_name', ''),))
         rows = cur.fetchall()
         
@@ -510,7 +511,45 @@ def save_feedback():
         return jsonify({"success": True}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-# ...existing code...
+
+
+@app.route('/delete_feedback', methods=['POST'])
+def delete_feedback():
+    if 'admin_id' not in session and 'coordinator_id' not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json()
+    app_no = data.get('application_number')
+
+    if not app_no:
+        return jsonify({"error": "Missing application number"}), 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        # Also clear feedback from form_data JSON if it exists there
+        cur.execute("SELECT form_data FROM applications WHERE application_number=%s", (app_no,))
+        row = cur.fetchone()
+        
+        form_data_str = None
+        if row and row.get('form_data'):
+            try:
+                form_data_dict = json.loads(row['form_data'])
+                if isinstance(form_data_dict, dict) and 'feedback' in form_data_dict:
+                    form_data_dict['feedback'] = ''
+                    form_data_str = json.dumps(form_data_dict)
+                else:
+                    form_data_str = row['form_data']
+            except Exception:
+                form_data_str = row['form_data']
+
+        cur = db.cursor()
+        cur.execute("UPDATE applications SET feedback = NULL, form_data = %s WHERE application_number=%s", (form_data_str, app_no))
+        db.commit()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/coordinator/profile', methods=['POST'])
@@ -588,6 +627,87 @@ def save_coordinator_work():
 
 
 # ---------------- Application Form ----------------
+@app.route('/upload_temp_photo', methods=['POST'])
+def upload_temp_photo():
+    """
+    Temporary endpoint for the multi-page confirm form to upload images before the final submission.
+    Returns the file path.
+    """
+    if 'coordinator_id' not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    if 'photo' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+        
+    file = request.files['photo']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+        
+    if file:
+        filename = secure_filename(file.filename)
+        ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        rand_str = str(random.randint(1000, 9999))
+        filename = f"temp_{ts}_{rand_str}_{filename}"
+        save_path = os.path.join(app.root_path, 'static', 'uploads', filename)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        file.save(save_path)
+        
+        photo_path = f"/static/uploads/{filename}"
+        return jsonify({"success": True, "path": photo_path})
+
+    return jsonify({"error": "Failed to handle file"}), 500
+
+
+@app.route('/conform_application')
+@app.route('/conform_application/<page>')
+def conform_application(page='first.html'):
+    if 'coordinator_id' not in session:
+        flash("Please log in as coordinator to access the form", "error")
+        return redirect(url_for('coordinator_page'))
+    if not page.endswith('.html'):
+        page += '.html'
+    return render_template(f'application form/{page}')
+
+@app.route('/save_draft', methods=['POST'])
+def save_draft():
+    if 'coordinator_id' not in session:
+        return jsonify({"error": "Not authorized"}), 401
+        
+    data = request.get_json()
+    application_number = data.get('application_number')
+    form_data = data.get('form_data')
+    
+    if not application_number:
+        return jsonify({"success": False, "error": "No application number provided for draft."}), 400
+        
+    db = get_db()
+    cursor = db.cursor(dictionary=True, buffered=True)
+    
+    try:
+        # Check if exists
+        cursor.execute("SELECT id FROM applications WHERE application_number = %s", (application_number,))
+        if cursor.fetchone():
+            cursor.execute("""
+                UPDATE applications 
+                SET form_data = %s,
+                    last_modified = %s
+                WHERE application_number = %s
+            """, (
+                json.dumps(form_data) if form_data else None,
+                datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                application_number
+            ))
+            db.commit()
+            return jsonify({"success": True, "message": "Draft saved successfully."})
+        else:
+            return jsonify({"success": False, "error": "Application not found."}), 404
+            
+    except Exception as e:
+        db.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        cursor.close()
+
 # Add this route after your existing routes
 # ...existing code...
 @app.route('/save_application', methods=['POST'])
@@ -601,17 +721,29 @@ def save_application():
     # Server-side validation
     # Server-side validation
     # application_number is NOT required for new applications (it will be generated)
-    required_fields = ['student_name', 'father_name', 'preferred_branch', 'mobile', 'address']
-    # Check top-level fields
-    missing = [f for f in required_fields if not data.get(f) or not str(data.get(f)).strip()]
-    
-    # Check inside form_data if needed, e.g. gender
+    # Extract top level fields or fallback to form_data
     form_data = data.get('form_data') or {}
-    if isinstance(form_data, dict):
-        if not form_data.get('gender'):
-            # It's okay if gender is missing from form_data if it's not strictly required by backend logic but ideally it should match frontend.
-            # Frontend marks it required.
-            missing.append('gender')
+    student_name = data.get('student_name') or form_data.get('student_name')
+    father_name = data.get('father_name') or form_data.get('father_name')
+    preferred_branch = data.get('preferred_branch') or form_data.get('preferred_branch')
+    mobile = data.get('mobile') or form_data.get('mobile') or form_data.get('father_mobile')
+    address = data.get('address') or form_data.get('address') or form_data.get('addr_street')
+    
+    form_type = data.get('form_type', 'normal')
+    missing = []
+    
+    # Check top-level required fields ONLY for normal forms
+    if form_type != 'confirm':
+        if not student_name: missing.append('student_name')
+        if not father_name: missing.append('father_name')
+        if not mobile: missing.append('mobile')
+        if not address: missing.append('address')
+        
+        if isinstance(form_data, dict):
+            if not form_data.get('gender'):
+                # It's okay if gender is missing from form_data if it's not strictly required by backend logic but ideally it should match frontend.
+                # Frontend marks it required.
+                missing.append('gender')
     
     if missing:
         return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
@@ -625,7 +757,9 @@ def save_application():
         except Exception as e:
              return jsonify({"error": f"Failed to generate application number: {str(e)}"}), 500
 
-    cursor = db.cursor(dictionary=True)
+    new_status = 'confirmed' if form_type == 'confirm' else 'visited'
+
+    cursor = db.cursor(dictionary=True, buffered=True)
 
     try:
         # Check if application exists
@@ -644,17 +778,18 @@ def save_application():
                     preferred_branch = %s,
                     mobile = %s,
                     address = %s,
-                    status = 'submitted',
+                    status = %s,
                     form_data = %s,
                     last_modified = %s,
                     date_submitted = COALESCE(date_submitted, %s)
                 WHERE application_number = %s
             """, (
-                data.get('student_name'),
-                data.get('father_name'),
-                data.get('preferred_branch'),
-                data.get('mobile'),
-                data.get('address'),
+                student_name,
+                father_name,
+                preferred_branch,
+                mobile,
+                address,
+                new_status,
                 json.dumps(data.get('form_data')) if data.get('form_data') else None,
                 datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), # Update last_modified
                 datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), # Set date_submitted if null
@@ -676,14 +811,15 @@ def save_application():
                     form_data,
                     date_submitted,
                     last_modified
-                ) VALUES (%s, %s, %s, %s, %s, %s, 'submitted', %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 data.get('application_number'),
-                data.get('student_name'),
-                data.get('father_name'),
-                data.get('preferred_branch'),
-                data.get('mobile'),
-                data.get('address'),
+                student_name,
+                father_name,
+                preferred_branch,
+                mobile,
+                address,
+                new_status,
                 session.get('coordinator_name', ''),
                 json.dumps(data.get('form_data')) if data.get('form_data') else None,
                 now_str, # date_submitted
@@ -759,18 +895,66 @@ def delete_reserved_application():
     data = request.get_json()
     appnum = data.get('application_number')
     if not appnum:
-        return jsonify({"success": False, "error": "application_number required"}), 400
+        return jsonify({'success': False, 'error': 'application_number required'}), 400
 
     db = get_db()
     cur = db.cursor()
     try:
-        # Delete only if status is 'reserved'
         cur.execute("DELETE FROM applications WHERE application_number=%s AND status='reserved'", (appnum,))
         db.commit()
-        return jsonify({"success": True, "message": "Reserved application deleted"}), 200
+        return jsonify({'success': True, 'message': 'Reserved application deleted'}), 200
     except Exception as e:
         db.rollback()
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+
+
+
+@app.route('/view_confirm_application')
+def view_confirm_application():
+    """
+    Render a read-only view of the confirm application form for a given app_no.
+    If the application has form_data (i.e., it was submitted via the confirm form),
+    it renders an in-line HTML page with all 7 pages of data pre-filled.
+    Otherwise, it redirects to the normal form viewer.
+    """
+    if 'coordinator_id' not in session and 'admin_id' not in session:
+        return redirect(url_for('coordinator_page'))
+
+    app_no = request.args.get('app_no', '').strip()
+    if not app_no:
+        return "No application number specified.", 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute("""
+        SELECT application_number, student_name, father_name, preferred_branch,
+               mobile, address, status, form_data, date_submitted
+        FROM applications WHERE application_number = %s
+    """, (app_no,))
+    row = cur.fetchone()
+
+    if not row:
+        return f"Application {app_no} not found.", 404
+
+    # If no form_data or not a confirmed application, redirect to normal form viewer
+    if row.get('status') != 'confirmed' or not row.get('form_data'):
+        return redirect(url_for('application_form', view=app_no))
+
+    try:
+        form_data = json.loads(row['form_data']) if isinstance(row['form_data'], str) else row['form_data']
+    except Exception:
+        form_data = {}
+
+    return render_template('view_confirm_form.html',
+                           app_no=app_no,
+                           form_data=form_data,
+                           student_name=row.get('student_name', ''),
+                           status=row.get('status', ''),
+                           date_submitted=row.get('date_submitted', ''))
+
+
 
 
 
@@ -789,9 +973,7 @@ def search_application():
     db = get_db()
     cur = db.cursor(dictionary=True)
     cur.execute("""
-        SELECT id, application_number, numeric_part, coordinator, status,
-               student_name, father_name, preferred_branch,
-               form_data, date_opened, date_submitted, last_modified
+        SELECT *
         FROM applications WHERE application_number = %s
     """, (appnum,))
     row = cur.fetchone()
@@ -864,61 +1046,166 @@ def admin_stats():
         db = get_db()
         cur = db.cursor(dictionary=True)
         
-        # Counters
-        cur.execute("SELECT COUNT(*) as c FROM applications WHERE status='submitted'")
-        admissions = cur.fetchone()['c']
-        # Enrollments logic: currently same as admissions, or filter by 'preferred_branch' not null
-        cur.execute("SELECT COUNT(*) as c FROM applications WHERE status='submitted' AND preferred_branch IS NOT NULL AND preferred_branch != ''")
-        enrollments = cur.fetchone()['c']
+        # ---- Counters (year-aware, computed after req_year is resolved below) ----
+        # Placeholder, will be computed after year parsing
         
-        # Graphs Data
-        # 1. Weekly (last 7 days)
         today = datetime.date.today()
+        cur_year = today.year
+
+        # ---- Find all years that have data in DB ----
+        cur.execute("""
+            SELECT DISTINCT YEAR(STR_TO_DATE(date_submitted, %s)) as yr
+            FROM applications
+            WHERE date_submitted IS NOT NULL AND date_submitted != ''
+            ORDER BY yr
+        """, ('%Y-%m-%d %H:%i:%s',))
+        db_years = sorted(set(
+            int(r['yr']) for r in cur.fetchall() if r['yr'] is not None
+        ))
+        # Include 10 previous years + current + next 3 years for a full scrollable list
+        fallback_years = list(range(cur_year - 10, cur_year + 4))
+        db_years = sorted(set(db_years + fallback_years))
+
+        # ---- Requested year (start year of academic year, default = current year) ----
+        # 'all' means show all-time data (no year filter)
+        year_param = request.args.get('year', '')
+        show_all_years = (year_param == 'all' or year_param == '')
+        if show_all_years:
+            req_year = cur_year   # used for monthly chart labels
+        else:
+            try:
+                req_year = int(year_param)
+            except (ValueError, TypeError):
+                req_year = cur_year
+        all_year_labels = [str(y) for y in db_years]   # used for yearly bar chart
+
+        month_names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+        # ---- Last 7 days labels ----
         weekly_labels = []
-        weekly_data = []
         for i in range(6, -1, -1):
             d = today - datetime.timedelta(days=i)
-            d_str = d.strftime("%Y-%m-%d")
-            weekly_labels.append(d.strftime("%a")) # Mon, Tue...
-            # Use STR_TO_DATE to safely handle VARCHAR dates
+            weekly_labels.append(d.strftime("%a %d/%m"))
+
+        # ---- Helper: weekly counts ----
+        def get_weekly(where_clause):
+            result = []
+            for i in range(6, -1, -1):
+                d = today - datetime.timedelta(days=i)
+                d_str = d.strftime("%Y-%m-%d")
+                cur.execute(f"""
+                    SELECT COUNT(*) as c FROM applications
+                    WHERE {where_clause}
+                      AND DATE(STR_TO_DATE(date_submitted, %s)) = %s
+                """, ('%Y-%m-%d %H:%i:%s', d_str))
+                row = cur.fetchone()
+                result.append(row['c'] if row else 0)
+            return result
+
+        # ---- Helper: 12-month counts for a given calendar year ----
+        def get_monthly(where_clause, year):
+            cur.execute(f"""
+                SELECT MONTH(STR_TO_DATE(date_submitted, %s)) as m, COUNT(*) as c
+                FROM applications
+                WHERE {where_clause}
+                  AND YEAR(STR_TO_DATE(date_submitted, %s)) = %s
+                GROUP BY m
+            """, ('%Y-%m-%d %H:%i:%s', '%Y-%m-%d %H:%i:%s', str(year)))
+            mm = {r['m']: r['c'] for r in cur.fetchall() if r['m'] is not None}
+            return [mm.get(i+1, 0) for i in range(12)]
+
+        # ---- Helper: count per each known year (for yearly bar) ----
+        def get_yearly(where_clause):
+            totals = []
+            for yr in db_years:
+                cur.execute(f"""
+                    SELECT COUNT(*) as c FROM applications
+                    WHERE {where_clause}
+                      AND YEAR(STR_TO_DATE(date_submitted, %s)) = %s
+                """, ('%Y-%m-%d %H:%i:%s', str(yr)))
+                row = cur.fetchone()
+                totals.append(row['c'] if row else 0)
+            return totals
+
+        # ---- Helper: dept breakdown, optionally filtered by year ----
+        def get_dept(where_clause, year=None):
+            if year:
+                cur.execute(f"""
+                    SELECT preferred_branch, COUNT(*) as c FROM applications
+                    WHERE {where_clause}
+                      AND YEAR(STR_TO_DATE(date_submitted, %s)) = %s
+                    GROUP BY preferred_branch
+                """, ('%Y-%m-%d %H:%i:%s', str(year)))
+            else:
+                cur.execute(f"""
+                    SELECT preferred_branch, COUNT(*) as c FROM applications
+                    WHERE {where_clause} GROUP BY preferred_branch
+                """)
+            rows = cur.fetchall()
+            return (
+                [r['preferred_branch'] for r in rows if r['preferred_branch']],
+                [r['c'] for r in rows if r['preferred_branch']]
+            )
+
+        # ====== Admissions (confirmed) ======
+        adm_w = "status='confirmed'"
+        adm_weekly   = get_weekly(adm_w)
+        adm_monthly  = get_monthly(adm_w, req_year)   # 12 months of selected year
+        adm_yearly   = get_yearly(adm_w)
+        adm_dept_l, adm_dept_d = get_dept(adm_w, req_year if not show_all_years else None)
+
+        # ====== Visited = ALL statuses ======
+        vis_w = "status IN ('visited','confirmed','pending')"
+        vis_weekly   = get_weekly(vis_w)
+        vis_monthly  = get_monthly(vis_w, req_year)   # 12 months of selected year
+        vis_yearly   = get_yearly(vis_w)
+        vis_dept_l, vis_dept_d = get_dept(vis_w, req_year if not show_all_years else None)
+
+        # ====== Year-filtered counters for the counter cards ======
+        if show_all_years:
+            cur.execute("SELECT COUNT(*) as c FROM applications WHERE status='confirmed'")
+            admissions = cur.fetchone()['c']
+            cur.execute("SELECT COUNT(*) as c FROM applications WHERE status IN ('visited', 'confirmed', 'pending')")
+            enrollments = cur.fetchone()['c']
+        else:
             cur.execute("""
-                SELECT COUNT(*) as c FROM applications 
-                WHERE DATE(STR_TO_DATE(date_submitted, %s)) = %s
-            """, ('%Y-%m-%d %H:%i:%s', d_str))
-            row = cur.fetchone()
-            weekly_data.append(row['c'] if row else 0)
-            
-        # 2. Monthly (last 6 months - can be improved to grouping)
-        # Simple implementation: Group by month for current year
-        cur.execute("""
-            SELECT DATE_FORMAT(STR_TO_DATE(date_submitted, %s), %s) as m, COUNT(*) as c 
-            FROM applications 
-            WHERE DATE_FORMAT(STR_TO_DATE(date_submitted, %s), %s) = %s 
-            GROUP BY m
-        """, ('%Y-%m-%d %H:%i:%s', '%m', '%Y-%m-%d %H:%i:%s', '%Y', today.strftime("%Y")))
-        monthly_rows = cur.fetchall()
-        month_map = {int(r['m']): r['c'] for r in monthly_rows if r['m'] is not None}
-        monthly_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-        monthly_data = [month_map.get(i+1, 0) for i in range(12)]
-        
-        # 3. Department Pie
-        cur.execute("SELECT preferred_branch, COUNT(*) as c FROM applications WHERE status='submitted' GROUP BY preferred_branch")
-        dept_rows = cur.fetchall()
-        dept_labels = [r['preferred_branch'] for r in dept_rows if r['preferred_branch']]
-        dept_data = [r['c'] for r in dept_rows if r['preferred_branch']]
-        
+                SELECT COUNT(*) as c FROM applications
+                WHERE status='confirmed'
+                  AND YEAR(STR_TO_DATE(date_submitted, %s)) = %s
+            """, ('%Y-%m-%d %H:%i:%s', str(req_year)))
+            admissions = cur.fetchone()['c']
+            cur.execute("""
+                SELECT COUNT(*) as c FROM applications
+                WHERE status IN ('visited', 'confirmed', 'pending')
+                  AND YEAR(STR_TO_DATE(date_submitted, %s)) = %s
+            """, ('%Y-%m-%d %H:%i:%s', str(req_year)))
+            enrollments = cur.fetchone()['c']
+
         return jsonify({
             "counters": {"admissions": admissions, "enrollments": enrollments},
-            "charts": {
-                "weekly": {"labels": weekly_labels, "data": weekly_data},
-                "monthly": {"labels": monthly_labels, "data": monthly_data, "year": today.year},
-                "dept": {"labels": dept_labels, "data": dept_data}
+            "meta": {
+                "cur_year":  cur_year,
+                "req_year":  req_year,
+                "all_years": db_years       # list of ints e.g. [2024, 2025, 2026]
+            },
+            "admissions_charts": {
+                "weekly":  {"labels": weekly_labels,   "data": adm_weekly},
+                "monthly": {"labels": month_names,     "data": adm_monthly, "year": req_year},
+                "yearly":  {"labels": all_year_labels, "data": adm_yearly},
+                "dept":    {"labels": adm_dept_l,      "data": adm_dept_d}
+            },
+            "visited_charts": {
+                "weekly":  {"labels": weekly_labels,   "data": vis_weekly},
+                "monthly": {"labels": month_names,     "data": vis_monthly, "year": req_year},
+                "yearly":  {"labels": all_year_labels, "data": vis_yearly},
+                "dept":    {"labels": vis_dept_l,      "data": vis_dept_d}
             }
         })
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/admin/coordinators', methods=['GET', 'POST', 'DELETE'])
 def admin_coordinators():
@@ -929,26 +1216,61 @@ def admin_coordinators():
     
     if request.method == 'GET':
         cur = db.cursor(dictionary=True)
-        cur.execute("SELECT id, first_name, last_name, email, phone, work FROM coordinators")
+        cur.execute("SELECT id, first_name, last_name, email, phone, work, photo FROM coordinators")
         rows = cur.fetchall()
         result = []
+
+        # Optional year filter from query param: ?year=2025 or ?year=all
+        year_param = request.args.get('year', 'all')
+        filter_year = None
+        if year_param and year_param != 'all':
+            try:
+                filter_year = int(year_param)
+            except (ValueError, TypeError):
+                filter_year = None
+
         for r in rows:
-            # Get admissions count for this coordinator
             coord_name = f"{r['first_name']} {r['last_name']}"
-            cur.execute("SELECT COUNT(*) as c FROM applications WHERE coordinator=%s", (coord_name,))
+
+            # Admissions count — filtered by year if requested
+            if filter_year:
+                cur.execute("""
+                    SELECT COUNT(*) as c FROM applications
+                    WHERE coordinator=%s AND status='confirmed'
+                      AND YEAR(STR_TO_DATE(date_submitted, %s)) = %s
+                """, (coord_name, '%Y-%m-%d %H:%i:%s', str(filter_year)))
+            else:
+                cur.execute(
+                    "SELECT COUNT(*) as c FROM applications WHERE coordinator=%s AND status='confirmed'",
+                    (coord_name,)
+                )
             count = cur.fetchone()['c']
-            
-            # Get students (last 5)
-            cur.execute("SELECT student_name, application_number FROM applications WHERE coordinator=%s LIMIT 5", (coord_name,))
+
+            # Recent students (last 5) — filtered by year if requested
+            if filter_year:
+                cur.execute("""
+                    SELECT student_name, application_number FROM applications
+                    WHERE coordinator=%s AND status IN ('visited','confirmed')
+                      AND YEAR(STR_TO_DATE(date_submitted, %s)) = %s
+                    LIMIT 5
+                """, (coord_name, '%Y-%m-%d %H:%i:%s', str(filter_year)))
+            else:
+                cur.execute(
+                    "SELECT student_name, application_number FROM applications WHERE coordinator=%s AND status IN ('visited','confirmed') LIMIT 5",
+                    (coord_name,)
+                )
             students = [{"name": s['student_name'], "appId": s['application_number']} for s in cur.fetchall()]
-            
+
+            photo_url = r['photo'] if r['photo'] else "https://via.placeholder.com/100"
+
             result.append({
                 "id": r['id'],
                 "username": coord_name,
                 "email": r['email'],
-                "photo": "https://via.placeholder.com/100", # Placeholder or implement upload
+                "photo": photo_url,
                 "admissions": count,
-                "students": students
+                "students": students,
+                "year": year_param   # echo back so frontend can display
             })
         return jsonify(result)
 
@@ -985,7 +1307,7 @@ def admin_feedback():
     if request.method == 'GET':
         cur = db.cursor(dictionary=True)
         # Fetching basic application data + columns for feedback
-        cur.execute("SELECT * FROM applications WHERE status='submitted'")
+        cur.execute("SELECT * FROM applications WHERE status IN ('visited', 'confirmed')")
         rows = cur.fetchall()
         data = []
         for r in rows:
@@ -1031,11 +1353,11 @@ def admin_work_log():
     today = datetime.date.today().isoformat()
     yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
     
-    cur.execute("SELECT coordinator, application_number, student_name FROM applications WHERE DATE(date_submitted) = %s", (today,))
-    today_rows = [{"coordinator": r['coordinator'], "appId": r['application_number'], "student": r['student_name']} for r in cur.fetchall()]
+    cur.execute("SELECT coordinator, application_number, student_name, preferred_branch, status FROM applications WHERE DATE(date_submitted) = %s", (today,))
+    today_rows = [{"coordinator": r['coordinator'], "appId": r['application_number'], "student": r['student_name'], "branch": r['preferred_branch'], "status": r['status']} for r in cur.fetchall()]
     
-    cur.execute("SELECT coordinator, application_number, student_name FROM applications WHERE DATE(date_submitted) = %s", (yesterday,))
-    yesterday_rows = [{"coordinator": r['coordinator'], "appId": r['application_number'], "student": r['student_name']} for r in cur.fetchall()]
+    cur.execute("SELECT coordinator, application_number, student_name, preferred_branch, status FROM applications WHERE DATE(date_submitted) = %s", (yesterday,))
+    yesterday_rows = [{"coordinator": r['coordinator'], "appId": r['application_number'], "student": r['student_name'], "branch": r['preferred_branch'], "status": r['status']} for r in cur.fetchall()]
     
     return jsonify({"today": today_rows, "yesterday": yesterday_rows})
 
@@ -1072,11 +1394,21 @@ def download_excel():
     start = request.args.get('start_date')
     end = request.args.get('end_date')
     chart = request.args.get('chart', '0')
+    branch = request.args.get('branch', '')
+    status = request.args.get('status', '')
+
     db = get_db()
     cur = db.cursor(dictionary=True)
 
-    cur.execute("SELECT * FROM applications WHERE date_submitted BETWEEN %s AND %s",
-                (start + " 00:00:00", end + " 23:59:59"))
+    query = "SELECT * FROM applications WHERE date_submitted BETWEEN %s AND %s"
+    params = [start + " 00:00:00", end + " 23:59:59"]
+    if branch:
+        query += " AND preferred_branch = %s"
+        params.append(branch)
+    if status:
+        query += " AND status = %s"
+        params.append(status)
+    cur.execute(query, tuple(params))
     rows = cur.fetchall()
 
     if not rows:
@@ -1135,11 +1467,21 @@ def download_excel():
 def download_pdf():
     start = request.args.get('start_date')
     end = request.args.get('end_date')
+    branch = request.args.get('branch', '')
+    status = request.args.get('status', '')
+
     db = get_db()
     cur = db.cursor(dictionary=True)
 
-    cur.execute("SELECT * FROM applications WHERE date_submitted BETWEEN %s AND %s",
-                (start + " 00:00:00", end + " 23:59:59"))
+    query = "SELECT * FROM applications WHERE date_submitted BETWEEN %s AND %s"
+    params = [start + " 00:00:00", end + " 23:59:59"]
+    if branch:
+        query += " AND preferred_branch = %s"
+        params.append(branch)
+    if status:
+        query += " AND status = %s"
+        params.append(status)
+    cur.execute(query, tuple(params))
     rows = cur.fetchall()
 
     if not rows:
@@ -1219,7 +1561,9 @@ def search_students():
                 'preferred_branch': row['preferred_branch'],
                 'mobile': row['mobile'],
                 'address': row['address'],
-                'next_visit': row.get('next_visit')
+                'status': row.get('status', ''),
+                'next_visit': row.get('next_visit', ''),
+                'feedback': row.get('feedback', '')
             })
             
         return jsonify({"students": students}), 200
@@ -1246,6 +1590,11 @@ def init_db():
         create_mysql_schema.create_schema()
     except Exception as e:
         print(f"Database initialization failed: {e}")
+
+@app.errorhandler(Exception)
+def handle_500(e):
+    import traceback
+    return f"<pre>{traceback.format_exc()}</pre>", 500
 
 if __name__ == "__main__":
     init_db()
